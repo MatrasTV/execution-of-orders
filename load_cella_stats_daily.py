@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Daily Cella statistics loader.
 
-This script reads daily stats for a specific Cella from two XLS reports and one
-CSV forecast file and stores the aggregated result in PostgreSQL.
+This script reads daily stats from two XLS reports and one CSV forecast file
+and stores the aggregated result in PostgreSQL. When the ``CELLA`` environment
+variable is set, only that Cella is processed; otherwise statistics for all
+Cellas found in the reports are loaded.
 
-Configuration is taken from environment variables. At minimum set ``CELLA`` and
-PostgreSQL connection variables (``PGHOST``, ``PGPORT``, ``PGDATABASE``,
-``PGUSER``, ``PGPASSWORD``). File paths default to ``Частично.xls``,
-``Целиком.xls`` and ``Почасовой прогноз прихода заказов на склад.csv``.
+Configuration is taken from environment variables. Specify PostgreSQL
+connection variables (``PGHOST``, ``PGPORT``, ``PGDATABASE``, ``PGUSER``,
+``PGPASSWORD``). File paths default to ``Частично.xls``, ``Целиком.xls`` and
+``Почасовой прогноз прихода заказов на склад.csv``.
 """
 from __future__ import annotations
 
 import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 import psycopg2
@@ -62,28 +64,36 @@ def determine_stats_date(date_str: Optional[str], tz_name: Optional[str]) -> dat
     return today - timedelta(days=1)
 
 
-def count_xls_rows(path: str, date_col: str, cella_col: str, cella: str, stats_date: date) -> int:
-    """Count rows in an XLS file for given Cella and date."""
+def count_xls_rows(
+    path: str, date_col: str, cella_col: str, stats_date: date, cella: Optional[str]
+) -> pd.Series:
+    """Count rows in an XLS file for the given date grouped by Cella."""
     df = pd.read_excel(path, engine="xlrd")
-    df = df[df[cella_col] == cella]
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
-    return int((df[date_col] == stats_date).sum())
-
-
-def compute_expected(path: str, cella: str, cella_col: Optional[str]) -> Decimal:
-    """Compute expected value from CSV forecast file."""
-    df = pd.read_csv(path, sep=None, engine="python")
-    if cella_col:
+    if cella:
         df = df[df[cella_col] == cella]
-    if df.empty:
-        return Decimal("0")
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    df = df[df[date_col] == stats_date]
+    return df.groupby(cella_col).size()
+
+
+def compute_expected(
+    path: str, cella_col: Optional[str], cella: Optional[str]
+) -> Dict[str, Decimal]:
+    """Compute expected value from CSV forecast file grouped by Cella."""
+    df = pd.read_csv(path, sep=None, engine="python")
     col = find_expected_column(df)
-    values = pd.to_numeric(df[col], errors="coerce").dropna()
-    if values.empty:
-        return Decimal("0")
-    if len(values) == 1:
-        return Decimal(str(values.iloc[0]))
-    return Decimal(str(values.sum()))
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=[col])
+
+    if cella_col and cella_col in df.columns:
+        if cella:
+            df = df[df[cella_col] == cella]
+        grouped = df.groupby(cella_col)[col].sum()
+        return {c: Decimal(str(v)) for c, v in grouped.items()}
+
+    total = Decimal(str(df[col].sum()))
+    key = cella if cella else "__all__"
+    return {key: total}
 
 
 def upsert_stats(
@@ -147,13 +157,15 @@ def getenv(name: str, default: Optional[str] = None, *, required: bool = False) 
 
 
 def main() -> None:
-    cella = getenv("CELLA", required=True)
+    cella = os.getenv("CELLA")
     tz_name = getenv("TZ", "Europe/Moscow")
     stats_date = determine_stats_date(os.getenv("STATS_DATE"), tz_name)
 
     partial_path = getenv("PARTIAL_XLS", "Частично.xls")
     full_path = getenv("FULL_XLS", "Целиком.xls")
-    forecast_path = getenv("FORECAST_CSV", "Почасовой прогноз прихода заказов на склад.csv")
+    forecast_path = getenv(
+        "FORECAST_CSV", "Почасовой прогноз прихода заказов на склад.csv"
+    )
 
     date_col = getenv("DATE_COL", "Плановая дата поставки")
     cella_col = getenv("CELLA_COL", "Cella")
@@ -188,18 +200,17 @@ def main() -> None:
         },
     )
 
-    partial_count = count_xls_rows(partial_path, date_col, cella_col, cella, stats_date)
-    full_count = count_xls_rows(full_path, date_col, cella_col, cella, stats_date)
-    expected = compute_expected(forecast_path, cella, csv_cella_col)
-
-    print(
-        "Computed metrics:",
-        {
-            "partial_count": partial_count,
-            "full_count": full_count,
-            "expected": float(expected),
-        },
+    partial_counts = count_xls_rows(
+        partial_path, date_col, cella_col, stats_date, cella
     )
+    full_counts = count_xls_rows(full_path, date_col, cella_col, stats_date, cella)
+    expected_map = compute_expected(forecast_path, csv_cella_col, cella)
+    default_expected = expected_map.pop("__all__", Decimal("0"))
+
+    if cella:
+        cellas = {cella}
+    else:
+        cellas = set(partial_counts.index) | set(full_counts.index) | set(expected_map.keys())
 
     conn = psycopg2.connect(
         host=host,
@@ -208,19 +219,35 @@ def main() -> None:
         user=user,
         password=password,
     )
-    row = upsert_stats(
-        conn,
-        schema,
-        table,
-        stats_date,
-        cella,
-        partial_count,
-        full_count,
-        expected,
-    )
-    conn.close()
 
-    print("DB record:", row)
+    for c in sorted(cellas):
+        partial_count = int(partial_counts.get(c, 0))
+        full_count = int(full_counts.get(c, 0))
+        expected = expected_map.get(c, default_expected)
+
+        print(
+            "Computed metrics:",
+            {
+                "cella": c,
+                "partial_count": partial_count,
+                "full_count": full_count,
+                "expected": float(expected),
+            },
+        )
+
+        row = upsert_stats(
+            conn,
+            schema,
+            table,
+            stats_date,
+            c,
+            partial_count,
+            full_count,
+            expected,
+        )
+        print("DB record:", row)
+
+    conn.close()
 
 
 if __name__ == "__main__":
