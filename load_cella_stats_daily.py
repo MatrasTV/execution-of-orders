@@ -64,6 +64,13 @@ def determine_stats_date(date_str: Optional[str], tz_name: Optional[str]) -> dat
     return today - timedelta(days=1)
 
 
+def resolve_path(path: str, base_dir: Optional[str]) -> str:
+    """Return an absolute path by prepending ``base_dir`` if provided."""
+    if os.path.isabs(path) or not base_dir:
+        return path
+    return os.path.join(base_dir, path)
+
+
 def count_xls_rows(
     path: str, date_col: str, cella_col: str, stats_date: date, cella: Optional[str]
 ) -> pd.Series:
@@ -166,10 +173,12 @@ def main() -> None:
     tz_name = getenv("TZ", "Europe/Moscow")
     stats_date = determine_stats_date(os.getenv("STATS_DATE"), tz_name)
 
-    partial_path = getenv("PARTIAL_XLS", "Частично.xls")
-    full_path = getenv("FULL_XLS", "Целиком.xls")
-    forecast_path = getenv(
-        "FORECAST_CSV", "Почасовой прогноз прихода заказов на склад.csv"
+    base_dir = os.getenv("DATA_DIR")
+    partial_path = resolve_path(getenv("PARTIAL_XLS", "Частично.xls"), base_dir)
+    full_path = resolve_path(getenv("FULL_XLS", "Целиком.xls"), base_dir)
+    forecast_path = resolve_path(
+        getenv("FORECAST_CSV", "Почасовой прогноз прихода заказов на склад.csv"),
+        base_dir,
     )
 
     date_col = getenv("DATE_COL", "Плановая дата поставки")
@@ -189,6 +198,7 @@ def main() -> None:
         "Parameters:",
         {
             "cella": cella,
+            "data_dir": base_dir,
             "partial": partial_path,
             "full": full_path,
             "forecast": forecast_path,
