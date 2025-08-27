@@ -22,3 +22,17 @@ python load_cella_stats_daily.py
 
 To change paths or connection settings, edit the constants at the top of the
 script.
+
+The loader ensures the target table exists with the following structure:
+
+```
+REPORT."execution-of-orders" (
+    id BIGSERIAL PRIMARY KEY,
+    stats_date DATE NOT NULL,
+    cella TEXT NOT NULL,
+    partial_count INT,
+    full_count INT,
+    expected NUMERIC(18,2),
+    UNIQUE (cella, stats_date)
+)
+```

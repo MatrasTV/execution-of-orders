@@ -142,7 +142,6 @@ def upsert_stats(
                 """
                 CREATE TABLE IF NOT EXISTS {}.{} (
                     id BIGSERIAL PRIMARY KEY,
-                    run_ts TIMESTAMPTZ DEFAULT now(),
                     stats_date DATE NOT NULL,
                     cella TEXT NOT NULL,
                     partial_count INT,
@@ -162,14 +161,14 @@ def upsert_stats(
                 SET partial_count = EXCLUDED.partial_count,
                     full_count = EXCLUDED.full_count,
                     expected = EXCLUDED.expected
-                RETURNING id, run_ts
+                RETURNING id
                 """
             ).format(sql.Identifier(schema), sql.Identifier(table)),
             (stats_date, cella, partial_count, full_count, expected),
         )
-        row = cur.fetchone()
+        row_id = cur.fetchone()[0]
         conn.commit()
-        return row
+        return row_id
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +253,7 @@ def main() -> None:
             },
         )
 
-        row = upsert_stats(
+        record_id = upsert_stats(
             conn,
             schema,
             table,
@@ -264,7 +263,7 @@ def main() -> None:
             full_count,
             expected,
         )
-        print("DB record:", row)
+        print("DB record id:", record_id)
 
     conn.close()
 
