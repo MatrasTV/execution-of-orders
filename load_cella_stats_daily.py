@@ -2,14 +2,9 @@
 """Daily Cella statistics loader.
 
 This script reads daily stats from two XLS reports and one CSV forecast file
-and stores the aggregated result in PostgreSQL. When the ``CELLA`` environment
-variable is set, only that Cella is processed; otherwise statistics for all
-Cellas found in the reports are loaded.
-
-Configuration is taken from environment variables. Specify PostgreSQL
-connection variables (``PGHOST``, ``PGPORT``, ``PGDATABASE``, ``PGUSER``,
-``PGPASSWORD``). File paths default to ``Частично.xls``, ``Целиком.xls`` and
-``Почасовой прогноз прихода заказов на склад.csv``.
+and stores the aggregated result in PostgreSQL. All configuration values are
+hard coded below so the script can be launched without any command line
+options or environment variables.
 """
 from __future__ import annotations
 
@@ -22,6 +17,35 @@ import pandas as pd
 import psycopg2
 from psycopg2 import sql
 from dateutil import parser as date_parser, tz
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Base directory containing the input files
+DATA_DIR = r"\\192.168.3.7\ul\Закупки\DATA"
+
+# Input file paths
+PARTIAL_XLS = os.path.join(DATA_DIR, "Частично.xls")
+FULL_XLS = os.path.join(DATA_DIR, "Целиком.xls")
+FORECAST_CSV = os.path.join(DATA_DIR, "Почасовой прогноз прихода заказов на склад.csv")
+
+# Report parameters
+DATE_COL = "Плановая дата поставки"
+CELLA_COL = "Cella"
+CSV_CELLA_COL: Optional[str] = None
+CELLA: Optional[str] = None  # Process all Cellas by default
+TZ_NAME = "Europe/Moscow"
+
+# PostgreSQL connection
+HOST = "192.168.3.19"
+PORT = 5432
+DBNAME = "postgres"
+USER = "Admin"
+PASSWORD = "0782"
+SCHEMA = "REPORT"
+TABLE = "execution-of-orders"
 
 
 # ---------------------------------------------------------------------------
@@ -62,13 +86,6 @@ def determine_stats_date(date_str: Optional[str], tz_name: Optional[str]) -> dat
     if today.weekday() == 0:  # Monday -> use previous Friday
         return today - timedelta(days=3)
     return today - timedelta(days=1)
-
-
-def resolve_path(path: str, base_dir: Optional[str]) -> str:
-    """Return an absolute path by prepending ``base_dir`` if provided."""
-    if os.path.isabs(path) or not base_dir:
-        return path
-    return os.path.join(base_dir, path)
 
 
 def count_xls_rows(
@@ -160,45 +177,32 @@ def upsert_stats(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def getenv(name: str, default: Optional[str] = None, *, required: bool = False) -> str:
-    """Return environment variable value or exit if required and missing."""
-    val = os.getenv(name, default)
-    if required and val is None:
-        raise SystemExit(f"Environment variable {name} is required")
-    return val
-
-
 def main() -> None:
-    cella = os.getenv("CELLA")
-    tz_name = getenv("TZ", "Europe/Moscow")
-    stats_date = determine_stats_date(os.getenv("STATS_DATE"), tz_name)
+    cella = CELLA
+    tz_name = TZ_NAME
+    stats_date = determine_stats_date(None, tz_name)
 
-    base_dir = os.getenv("DATA_DIR")
-    partial_path = resolve_path(getenv("PARTIAL_XLS", "Частично.xls"), base_dir)
-    full_path = resolve_path(getenv("FULL_XLS", "Целиком.xls"), base_dir)
-    forecast_path = resolve_path(
-        getenv("FORECAST_CSV", "Почасовой прогноз прихода заказов на склад.csv"),
-        base_dir,
-    )
+    partial_path = PARTIAL_XLS
+    full_path = FULL_XLS
+    forecast_path = FORECAST_CSV
 
-    date_col = getenv("DATE_COL", "Плановая дата поставки")
-    cella_col = getenv("CELLA_COL", "Cella")
-    csv_cella_col = os.getenv("CSV_CELLA_COL")
+    date_col = DATE_COL
+    cella_col = CELLA_COL
+    csv_cella_col = CSV_CELLA_COL
 
-    host = getenv("PGHOST", "localhost")
-    port = int(getenv("PGPORT", "5432"))
-    dbname = getenv("PGDATABASE", "postgres")
-    user = getenv("PGUSER", "postgres")
-    password = getenv("PGPASSWORD", "")
-    schema = getenv("SCHEMA", "REPORT")
-    table = getenv("TABLE", "execution-of-orders")
+    host = HOST
+    port = PORT
+    dbname = DBNAME
+    user = USER
+    password = PASSWORD
+    schema = SCHEMA
+    table = TABLE
 
     print(f"Stats date: {stats_date}")
     print(
         "Parameters:",
         {
             "cella": cella,
-            "data_dir": base_dir,
             "partial": partial_path,
             "full": full_path,
             "forecast": forecast_path,
