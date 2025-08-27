@@ -4,13 +4,14 @@
 This script reads daily stats for a specific Cella from two XLS reports and one
 CSV forecast file and stores the aggregated result in PostgreSQL.
 
-See README or script docstring for usage details.
+Configuration is taken from environment variables. At minimum set ``CELLA`` and
+PostgreSQL connection variables (``PGHOST``, ``PGPORT``, ``PGDATABASE``,
+``PGUSER``, ``PGPASSWORD``). File paths default to ``Частично.xls``,
+``Целиком.xls`` and ``Почасовой прогноз прихода заказов на склад.csv``.
 """
 from __future__ import annotations
 
-import argparse
 import os
-import sys
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -50,7 +51,7 @@ def find_expected_column(df: pd.DataFrame) -> str:
 
 
 def determine_stats_date(date_str: Optional[str], tz_name: Optional[str]) -> date:
-    """Determine the statistics date based on CLI argument and current day."""
+    """Determine the statistics date based on argument and current day."""
     if date_str:
         return date_parser.isoparse(date_str).date()
 
@@ -137,67 +138,59 @@ def upsert_stats(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Load daily Cella statistics")
-    parser.add_argument("--cella", required=True, help="Cella value to filter")
-    parser.add_argument("--date", help="Stats date YYYY-MM-DD")
-    parser.add_argument("--partial", required=True, help="Path to 'Частично.xls'")
-    parser.add_argument("--full", required=True, help="Path to 'Целиком.xls'")
-    parser.add_argument(
-        "--forecast", required=True, help="Path to forecast CSV file"
-    )
-    parser.add_argument(
-        "--date-col",
-        default="Плановая дата поставки",
-        help="Column name with planned delivery date",
-    )
-    parser.add_argument(
-        "--cella-col", default="Cella", help="Column name with Cella in XLS"
-    )
-    parser.add_argument(
-        "--csv-cella-col",
-        help="Optional column name with Cella in forecast CSV",
-    )
-    parser.add_argument("--host", default=os.getenv("PGHOST"), help="DB host")
-    parser.add_argument(
-        "--port", type=int, default=int(os.getenv("PGPORT", 5432)), help="DB port"
-    )
-    parser.add_argument("--dbname", default=os.getenv("PGDATABASE"), help="DB name")
-    parser.add_argument("--user", default=os.getenv("PGUSER"), help="DB user")
-    parser.add_argument(
-        "--password", default=os.getenv("PGPASSWORD"), help="DB password"
-    )
-    parser.add_argument("--schema", default="REPORT", help="DB schema")
-    parser.add_argument(
-        "--table", default="execution-of-orders", help="DB table name"
-    )
-    parser.add_argument(
-        "--tz", default="Europe/Moscow", help="Timezone for date calculations"
-    )
-
-    if argv is None:
-        argv = sys.argv[1:]
-    if not argv:
-        parser.print_help()
-        parser.exit(1)
-
-    return parser.parse_args(argv)
+def getenv(name: str, default: Optional[str] = None, *, required: bool = False) -> str:
+    """Return environment variable value or exit if required and missing."""
+    val = os.getenv(name, default)
+    if required and val is None:
+        raise SystemExit(f"Environment variable {name} is required")
+    return val
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    args = parse_args(argv)
+def main() -> None:
+    cella = getenv("CELLA", required=True)
+    tz_name = getenv("TZ", "Europe/Moscow")
+    stats_date = determine_stats_date(os.getenv("STATS_DATE"), tz_name)
 
-    stats_date = determine_stats_date(args.date, args.tz)
+    partial_path = getenv("PARTIAL_XLS", "Частично.xls")
+    full_path = getenv("FULL_XLS", "Целиком.xls")
+    forecast_path = getenv("FORECAST_CSV", "Почасовой прогноз прихода заказов на склад.csv")
+
+    date_col = getenv("DATE_COL", "Плановая дата поставки")
+    cella_col = getenv("CELLA_COL", "Cella")
+    csv_cella_col = os.getenv("CSV_CELLA_COL")
+
+    host = getenv("PGHOST", "localhost")
+    port = int(getenv("PGPORT", "5432"))
+    dbname = getenv("PGDATABASE", "postgres")
+    user = getenv("PGUSER", "postgres")
+    password = getenv("PGPASSWORD", "")
+    schema = getenv("SCHEMA", "REPORT")
+    table = getenv("TABLE", "execution-of-orders")
+
     print(f"Stats date: {stats_date}")
-    print(f"Parameters: {args}")
+    print(
+        "Parameters:",
+        {
+            "cella": cella,
+            "partial": partial_path,
+            "full": full_path,
+            "forecast": forecast_path,
+            "date_col": date_col,
+            "cella_col": cella_col,
+            "csv_cella_col": csv_cella_col,
+            "host": host,
+            "port": port,
+            "dbname": dbname,
+            "user": user,
+            "schema": schema,
+            "table": table,
+            "tz": tz_name,
+        },
+    )
 
-    partial_count = count_xls_rows(
-        args.partial, args.date_col, args.cella_col, args.cella, stats_date
-    )
-    full_count = count_xls_rows(
-        args.full, args.date_col, args.cella_col, args.cella, stats_date
-    )
-    expected = compute_expected(args.forecast, args.cella, args.csv_cella_col)
+    partial_count = count_xls_rows(partial_path, date_col, cella_col, cella, stats_date)
+    full_count = count_xls_rows(full_path, date_col, cella_col, cella, stats_date)
+    expected = compute_expected(forecast_path, cella, csv_cella_col)
 
     print(
         "Computed metrics:",
@@ -209,18 +202,18 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     conn = psycopg2.connect(
-        host=args.host,
-        port=args.port,
-        dbname=args.dbname,
-        user=args.user,
-        password=args.password,
+        host=host,
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
     )
     row = upsert_stats(
         conn,
-        args.schema,
-        args.table,
+        schema,
+        table,
         stats_date,
-        args.cella,
+        cella,
         partial_count,
         full_count,
         expected,
