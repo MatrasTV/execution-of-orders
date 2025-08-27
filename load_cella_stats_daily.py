@@ -100,7 +100,9 @@ def count_xls_rows(
         ) from exc
     if cella:
         df = df[df[cella_col] == cella]
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    # Dates in the reports use day-first formatting (e.g. 26.08.2025),
+    # so explicitly enable dayfirst parsing to avoid ambiguous warnings.
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True).dt.date
     df = df[df[date_col] == stats_date]
     return df.groupby(cella_col).size()
 
