@@ -68,7 +68,12 @@ def count_xls_rows(
     path: str, date_col: str, cella_col: str, stats_date: date, cella: Optional[str]
 ) -> pd.Series:
     """Count rows in an XLS file for the given date grouped by Cella."""
-    df = pd.read_excel(path, engine="xlrd")
+    try:
+        df = pd.read_excel(path, engine="xlrd")
+    except ImportError as exc:  # pragma: no cover - dependency check
+        raise SystemExit(
+            "Missing optional dependency 'xlrd'. Install it with 'pip install xlrd'."
+        ) from exc
     if cella:
         df = df[df[cella_col] == cella]
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date

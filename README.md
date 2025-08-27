@@ -2,6 +2,12 @@
 
 Utility to load daily Cella statistics into PostgreSQL.
 
+Install dependencies first:
+
+```
+pip install -r requirements.txt
+```
+
 The script reads configuration from environment variables and requires no
 command-line options. Set the variables and run the script:
 
