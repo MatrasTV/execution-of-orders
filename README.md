@@ -12,3 +12,5 @@ python load_cella_stats_daily.py \
     --user Admin --password 0782 \
     --schema REPORT --table "execution-of-orders"
 ```
+
+Run without arguments to see the full list of supported options.

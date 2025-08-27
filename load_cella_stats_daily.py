@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -173,6 +174,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--tz", default="Europe/Moscow", help="Timezone for date calculations"
     )
+
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        parser.print_help()
+        parser.exit(1)
+
     return parser.parse_args(argv)
 
 
