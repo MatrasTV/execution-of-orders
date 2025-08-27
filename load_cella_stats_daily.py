@@ -34,7 +34,7 @@ FORECAST_CSV = os.path.join(DATA_DIR, "Почасовой прогноз при�
 # Report parameters
 DATE_COL = "Плановая дата поставки"
 CELLA_COL = "Cella"
-CSV_CELLA_COL: Optional[str] = None
+CSV_CELLA_COL = "cella"
 CELLA: Optional[str] = None  # Process all Cellas by default
 TZ_NAME = "Europe/Moscow"
 
@@ -110,24 +110,18 @@ def count_xls_rows(
     return df.groupby(cella_col).size()
 
 
-def compute_expected(
-    path: str, cella_col: Optional[str], cella: Optional[str]
-) -> Dict[str, Decimal]:
-    """Compute expected value from CSV forecast file grouped by Cella."""
+def compute_expected(path: str, cella_col: str) -> Dict[str, Decimal]:
+    """Compute expected values from CSV forecast file grouped by Cella."""
     df = pd.read_csv(path, sep=None, engine="python")
     col = find_expected_column(df)
     df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=[col])
 
-    if cella_col and cella_col in df.columns:
-        if cella:
-            df = df[df[cella_col] == cella]
-        grouped = df.groupby(cella_col)[col].sum()
-        return {c: Decimal(str(v)) for c, v in grouped.items()}
+    if cella_col not in df.columns:
+        raise ValueError(f"Column '{cella_col}' not found in forecast file")
 
-    total = Decimal(str(df[col].sum()))
-    key = cella if cella else "__all__"
-    return {key: total}
+    grouped = df.groupby(cella_col)[col].sum()
+    return {str(c): Decimal(str(v)) for c, v in grouped.items()}
 
 
 def upsert_stats(
@@ -136,9 +130,9 @@ def upsert_stats(
     table: str,
     stats_date: date,
     cella: str,
-    partial_count: int,
-    full_count: int,
-    expected: Decimal,
+    partial_count: Optional[int],
+    full_count: Optional[int],
+    expected: Optional[Decimal],
 ):
     """Create tables if necessary and upsert statistics."""
     with conn.cursor() as cur:
@@ -151,9 +145,9 @@ def upsert_stats(
                     run_ts TIMESTAMPTZ DEFAULT now(),
                     stats_date DATE NOT NULL,
                     cella TEXT NOT NULL,
-                    partial_count INT NOT NULL,
-                    full_count INT NOT NULL,
-                    expected NUMERIC(18,2) NOT NULL,
+                    partial_count INT,
+                    full_count INT,
+                    expected NUMERIC(18,2),
                     UNIQUE (cella, stats_date)
                 )
                 """
@@ -228,8 +222,7 @@ def main() -> None:
         partial_path, date_col, cella_col, stats_date, cella
     )
     full_counts = count_xls_rows(full_path, date_col, cella_col, stats_date, cella)
-    expected_map = compute_expected(forecast_path, csv_cella_col, cella)
-    default_expected = expected_map.pop("__all__", Decimal("0"))
+    expected_map = compute_expected(forecast_path, csv_cella_col)
 
     if cella:
         cellas = {cella}
@@ -245,9 +238,11 @@ def main() -> None:
     )
 
     for c in sorted(cellas):
-        partial_count = int(partial_counts.get(c, 0))
-        full_count = int(full_counts.get(c, 0))
-        expected = expected_map.get(c, default_expected)
+        pc_val = partial_counts.get(c)
+        partial_count = int(pc_val) if pc_val is not None and not pd.isna(pc_val) else None
+        fc_val = full_counts.get(c)
+        full_count = int(fc_val) if fc_val is not None and not pd.isna(fc_val) else None
+        expected = expected_map.get(c)
 
         print(
             "Computed metrics:",
@@ -255,7 +250,7 @@ def main() -> None:
                 "cella": c,
                 "partial_count": partial_count,
                 "full_count": full_count,
-                "expected": float(expected),
+                "expected": float(expected) if expected is not None else None,
             },
         )
 
